@@ -1,4 +1,4 @@
-name: CI/CD Docker Pipeline
+name: CI/CD Pipeline - Quality & Security Gates
 on:
   push:
     branches:
@@ -6,49 +6,143 @@ on:
   pull_request:
     branches:
       - main
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
 jobs:
   docker-build-and-test:
-    name: Build Docker & Run Unit Tests
+    name: Build Docker & Unit Tests in Container
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -t auy1102-app:ci .
-      - name: Run unit tests inside container
-        run: docker run --rm auy1102-app:ci npm run test:unit
-      # Se exporta la imagen probada para reutilizar exactamente la misma en el deploy
-      - name: Save tested Docker image
-        run: docker save auy1102-app:ci -o auy1102-app.tar
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} .
+      - name: Run unit tests inside Docker container
+        run: |
+          docker run --rm ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} npm run test:unit
+      - name: Save Docker image artifact
+        run: |
+          docker save -o image.tar ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
           name: docker-image
-          path: auy1102-app.tar
+          path: image.tar
           retention-days: 1
-  docker-publish:
-    name: Publish Image to Docker Hub
-    needs: [docker-build-and-test]
-    if: ${{ success() && ((github.event_name == 'push' && github.ref == 'refs/heads/develop') || github.event_name == 'pull_request') }}
+  sonarcloud:
+    name: SonarCloud Static Analysis & Quality Gate
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
-      - name: Download tested Docker image
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies & generate coverage
+        run: |
+          npm ci
+          npm run test:coverage
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+  snyk:
+    name: Snyk Security & SAST Analysis
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies & Snyk CLI
+        run: |
+          npm ci
+          npm install -g snyk
+      - name: Authenticate Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+      - name: Snyk Open Source (Dependencies)
+        run: snyk test --severity-threshold=high
+      - name: Snyk Code (SAST)
+        run: snyk code test --severity-threshold=high
+  dependency-review:
+    name: GHAS Dependency Review
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+  docker-scout:
+    name: Docker Scout Image Vulnerability Scan
+    needs: [docker-build-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image artifact
         uses: actions/download-artifact@v4
         with:
           name: docker-image
       - name: Load Docker image
-        run: docker load -i auy1102-app.tar
-      - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        run: docker load -i image.tar
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Tag and push image to Docker Hub
-        env:
-          DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Docker Scout CVE Scan
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
+          only-severities: critical,high
+          exit-code: true
+  docker-publish:
+    name: Publish Image to Docker Hub
+    needs: [docker-build-and-test, sonarcloud, snyk, dependency-review, docker-scout]
+    if: |
+      always() &&
+      needs.docker-build-and-test.result == 'success' &&
+      needs.docker-scout.result == 'success' &&
+      (github.event_name != 'pull_request' || (
+        needs.sonarcloud.result == 'success' &&
+        needs.snyk.result == 'success' &&
+        needs.dependency-review.result == 'success'
+      ))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Load Docker image
+        run: docker load -i image.tar
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Tag and Push to Docker Hub
         run: |
-          docker tag auy1102-app:ci "$DOCKER_USER/auy1102-pipeline-ev3:$IMAGE_TAG"
-          docker tag auy1102-app:ci "$DOCKER_USER/auy1102-pipeline-ev3:latest"
-          docker push "$DOCKER_USER/auy1102-pipeline-ev3:$IMAGE_TAG"
-          docker push "$DOCKER_USER/auy1102-pipeline-ev3:latest"
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3"
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
