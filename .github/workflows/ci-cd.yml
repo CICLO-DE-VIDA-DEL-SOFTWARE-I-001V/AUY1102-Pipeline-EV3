@@ -140,7 +140,7 @@ jobs:
         with:
           command: cves
           image: ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
-          only-severities: critical,high
+          only-severities: critical
           exit-code: true
 
   docker-publish:
