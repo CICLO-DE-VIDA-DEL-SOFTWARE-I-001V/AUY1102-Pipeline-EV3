@@ -17,12 +17,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Build Docker image
+      - name: Build test Docker image
         run: |
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} .
+          docker build --target test -t auy1102-pipeline-ev3:test .
       - name: Run unit tests inside Docker container
         run: |
-          docker run --rm ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} npm run test:unit
+          docker run --rm auy1102-pipeline-ev3:test npm run test:unit
+      - name: Build production Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} .
       - name: Save Docker image artifact
         run: |
           docker save -o image.tar ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
@@ -44,7 +47,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: Install dependencies & generate coverage
         run: |
@@ -68,7 +71,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: Install dependencies & Snyk CLI
         run: |
@@ -80,6 +83,8 @@ jobs:
         run: snyk test --severity-threshold=high
       - name: Snyk Code (SAST)
         run: snyk code test --severity-threshold=high
+      - name: Snyk Monitor
+        run: snyk monitor
   dependency-review:
     name: GHAS Dependency Review
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
