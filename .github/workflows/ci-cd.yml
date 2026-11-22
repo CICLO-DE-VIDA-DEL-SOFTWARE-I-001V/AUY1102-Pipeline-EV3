@@ -6,17 +6,17 @@ on:
   pull_request:
     branches:
       - main
+
 permissions:
   contents: read
-  pull-requests: write
-  security-events: write
+
 jobs:
   docker-build-and-test:
     name: Build Docker & Unit Tests in Container
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Build test Docker image
         run: |
           docker build --target test -t auy1102-pipeline-ev3:test .
@@ -24,102 +24,125 @@ jobs:
         run: |
           docker run --rm auy1102-pipeline-ev3:test npm run test:unit
       - name: Build production Docker image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }} .
+          docker build -t "${DOCKERHUB_USERNAME}/auy1102-pipeline-ev3:${GITHUB_SHA}" .
       - name: Save Docker image artifact
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          docker save -o image.tar ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
+          docker save -o image.tar "${DOCKERHUB_USERNAME}/auy1102-pipeline-ev3:${GITHUB_SHA}"
       - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: docker-image
           path: image.tar
           retention-days: 1
+
   sonarcloud:
     name: SonarCloud Static Analysis & Quality Gate
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
           cache: 'npm'
       - name: Install dependencies & generate coverage
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run test:coverage
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarcloud-github-action@ba3875ecf642b2129de2b589510c81a8b53dbf4e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
             -Dsonar.qualitygate.wait=true
+
   snyk:
     name: Snyk Security & SAST Analysis
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
           cache: 'npm'
       - name: Install dependencies & Snyk CLI
         run: |
-          npm ci
-          npm install -g snyk
+          npm ci --ignore-scripts
+          npm install -g snyk@1.1309.0 --ignore-scripts
       - name: Authenticate Snyk
-        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk auth "$SNYK_TOKEN"
       - name: Snyk Open Source (Dependencies)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --severity-threshold=high
       - name: Snyk Code (SAST)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk code test --severity-threshold=high
       - name: Snyk Monitor
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk monitor
+
   dependency-review:
     name: GHAS Dependency Review
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Dependency Review
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
         with:
           fail-on-severity: high
           comment-summary-in-pr: always
+
   docker-scout:
     name: Docker Scout Image Vulnerability Scan
     needs: [docker-build-and-test]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: docker-image
       - name: Load Docker image
         run: docker load -i image.tar
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Docker Scout CVE Scan
-        uses: docker/scout-action@v1
+        uses: docker/scout-action@4bbf17a9da65a7b5497361bb407e88cc9548f69c
         with:
           command: cves
           image: ${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3:${{ github.sha }}
           only-severities: critical,high
           exit-code: true
+
   docker-publish:
     name: Publish Image to Docker Hub
     needs: [docker-build-and-test, sonarcloud, snyk, dependency-review, docker-scout]
@@ -135,19 +158,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: docker-image
       - name: Load Docker image
         run: docker load -i image.tar
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Tag and Push to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/auy1102-pipeline-ev3"
-          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
-          docker push "$IMAGE:${{ github.sha }}"
-          docker push "$IMAGE:latest"
+          IMAGE="${DOCKERHUB_USERNAME}/auy1102-pipeline-ev3"
+          docker tag "${IMAGE}:${GITHUB_SHA}" "${IMAGE}:latest"
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"

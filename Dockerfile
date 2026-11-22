@@ -3,7 +3,7 @@ FROM node:22-alpine AS test
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY . .
 RUN npm run build
@@ -18,7 +18,7 @@ ENV NODE_ENV=production
 RUN apk update && apk upgrade --no-cache
 
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=test /usr/src/app/dist ./dist
 
