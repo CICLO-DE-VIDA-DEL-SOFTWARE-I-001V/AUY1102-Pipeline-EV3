@@ -19,7 +19,7 @@ describe('NumberValueObject', () => {
 
     it(`should return "false" if the values are not the same`, () => {
       const actualAge = new Age(age);
-      const differentAge = new Age(IntegerMother.random())
+      const differentAge = new Age(age + 1)
       const expected = actualAge.equalsTo(differentAge);
 
       expect(expected).toBe(false);
